@@ -18,12 +18,64 @@ jobs:
         uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: '1.26.7'
           cache: false
+      - name: Record and enforce public-candidate privacy/linkability gate
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts/provenance | Out-Null
+          $report = New-Object System.Collections.Generic.List[string]
+          $report.Add("candidate_sha=$env:GITHUB_SHA")
+          $report.Add("event=$env:GITHUB_EVENT_NAME")
+          $legacyOwner = 'tree' + '-1508'
+          $legacyRepo = 'github.com/' + $legacyOwner + '/dlm-butler-runtime'
+          $legacyCommit = '616652180ebacedb44b70150' + 'b4f995c5f7d9be67'
+          $forbidden = @($legacyOwner, $legacyRepo, $legacyCommit)
+          foreach ($needle in $forbidden) {
+            $blobHits = @(git grep -I -l -F -- $needle HEAD -- 2>$null)
+            if ($LASTEXITCODE -notin @(0,1)) { throw "git grep failed for privacy needle: $needle" }
+            if ($blobHits.Count -gt 0) {
+              $report.Add("FAIL tracked-blob forbidden indicator: $needle")
+              $report.AddRange([string[]]$blobHits)
+              $report | Out-File -Encoding utf8 artifacts/provenance/privacy-linkability-scan.txt
+              throw 'Privacy/linkability gate failed in tracked blobs.'
+            }
+            $messageHits = @(git log HEAD --format='%H%x09%B' | Select-String -SimpleMatch $needle)
+            if ($messageHits.Count -gt 0) {
+              $report.Add("FAIL commit-message forbidden indicator: $needle")
+              $report | Out-File -Encoding utf8 artifacts/provenance/privacy-linkability-scan.txt
+              throw 'Privacy/linkability gate failed in commit messages.'
+            }
+          }
+          if ($env:GITHUB_EVENT_NAME -ne 'pull_request') {
+            $bad = @()
+            foreach ($line in @(git log HEAD --format='%H%x09%an%x09%ae%x09%cn%x09%ce')) {
+              $p = $line -split "`t", 5
+              if ($p.Count -ne 5) { throw 'Unexpected git log identity record.' }
+              if ($p[1] -ne 'Ertelun' -or $p[2] -ne 'noreply@ertelun.invalid' -or $p[3] -ne 'Ertelun' -or $p[4] -ne 'noreply@ertelun.invalid') { $bad += $p[0] }
+            }
+            if ($bad.Count -gt 0) {
+              $report.Add("FAIL unexpected canonical commit identity in: $($bad -join ',')")
+              $report | Out-File -Encoding utf8 artifacts/provenance/privacy-linkability-scan.txt
+              throw 'Canonical commit identity gate failed.'
+            }
+          }
+          $tags = @(git tag --list)
+          if ($tags.Count -ne 0) {
+            $report.Add("FAIL unexpected pre-release tag(s): $($tags -join ',')")
+            $report | Out-File -Encoding utf8 artifacts/provenance/privacy-linkability-scan.txt
+            throw 'Unexpected tag metadata exists before release-tag protection gate.'
+          }
+          $report.Add('tracked_blob_linkability=PASS')
+          $report.Add('commit_message_linkability=PASS')
+          $report.Add('canonical_identity=PASS_OR_PR_DEFERRED')
+          $report.Add('pre_release_tags=PASS_NONE')
+          $report | Out-File -Encoding utf8 artifacts/provenance/privacy-linkability-scan.txt
 
       - name: Verify clean runtime dependency graph
         shell: pwsh
@@ -64,18 +116,59 @@ jobs:
           if (Test-Path -LiteralPath artifacts/windows-amd64/7z.dll) { throw '7z.dll must not be present' }
           if (Test-Path -LiteralPath artifacts/windows-amd64/c7zip.dll) { throw 'c7zip.dll must not be present' }
 
-      - name: Prove DLD stdio runtime starts without provider traffic
+      - name: Prove stdio-only runtime and record listener/process evidence
         shell: pwsh
         run: |
-          $requests = @(
-            '{"jsonrpc":"2.0","id":1,"method":"Version.Get","params":{}}',
-            '{"jsonrpc":"2.0","id":2,"method":"Meta.Shutdown","params":{}}'
-          ) -join "`n"
-          $responses = $requests | & artifacts/windows-amd64/butler.exe daemon --json --transport stdio
-          if ($LASTEXITCODE -ne 0) { throw "DLD stdio runtime exited with $LASTEXITCODE" }
-          $joined = $responses -join "`n"
-          if ($joined -notmatch '"id":1' -or $joined -notmatch '"versionString"') { throw 'Version.Get response missing' }
-          if ($joined -notmatch '"id":2') { throw 'Meta.Shutdown response missing' }
+          New-Item -ItemType Directory -Force artifacts/provenance | Out-Null
+          $psi = [System.Diagnostics.ProcessStartInfo]::new()
+          $psi.FileName = (Resolve-Path 'artifacts/windows-amd64/butler.exe').Path
+          $psi.ArgumentList.Add('daemon')
+          $psi.ArgumentList.Add('--json')
+          $psi.ArgumentList.Add('--transport')
+          $psi.ArgumentList.Add('stdio')
+          $psi.UseShellExecute = $false
+          $psi.CreateNoWindow = $true
+          $psi.RedirectStandardInput = $true
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError = $true
+          $proc = [System.Diagnostics.Process]::new()
+          $proc.StartInfo = $psi
+          if (-not $proc.Start()) { throw 'Failed to start DLD stdio runtime.' }
+          try {
+            Start-Sleep -Milliseconds 750
+            if ($proc.HasExited) { throw "DLD stdio runtime exited prematurely with $($proc.ExitCode)." }
+            $children = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $($proc.Id)" -ErrorAction Stop)
+            $tcp = @(Get-NetTCPConnection -OwningProcess $proc.Id -State Listen -ErrorAction SilentlyContinue)
+            $udp = @(Get-NetUDPEndpoint -OwningProcess $proc.Id -ErrorAction SilentlyContinue)
+            @(
+              "pid=$($proc.Id)",
+              "path=$($psi.FileName)",
+              "child_process_count=$($children.Count)",
+              "tcp_listener_count=$($tcp.Count)",
+              "udp_listener_count=$($udp.Count)"
+            ) | Out-File -Encoding utf8 artifacts/provenance/runtime-process-summary.txt
+            if ($children.Count -eq 0) { 'NONE' | Out-File -Encoding ascii artifacts/provenance/runtime-child-processes.txt } else { $children | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine | Format-List | Out-File -Encoding utf8 artifacts/provenance/runtime-child-processes.txt }
+            if ($tcp.Count -eq 0) { 'NONE' | Out-File -Encoding ascii artifacts/provenance/runtime-tcp-listeners.txt } else { $tcp | Select-Object LocalAddress,LocalPort,RemoteAddress,RemotePort,State,OwningProcess | Format-Table -AutoSize | Out-File -Encoding utf8 artifacts/provenance/runtime-tcp-listeners.txt }
+            if ($udp.Count -eq 0) { 'NONE' | Out-File -Encoding ascii artifacts/provenance/runtime-udp-listeners.txt } else { $udp | Select-Object LocalAddress,LocalPort,OwningProcess | Format-Table -AutoSize | Out-File -Encoding utf8 artifacts/provenance/runtime-udp-listeners.txt }
+            if ($children.Count -ne 0) { throw 'Unexpected child process(es) spawned by stdio runtime.' }
+            if ($tcp.Count -ne 0) { throw 'Unexpected TCP listener(s) owned by stdio runtime.' }
+            if ($udp.Count -ne 0) { throw 'Unexpected UDP listener(s) owned by stdio runtime.' }
+            $proc.StandardInput.WriteLine('{"jsonrpc":"2.0","id":1,"method":"Version.Get","params":{}}')
+            $proc.StandardInput.WriteLine('{"jsonrpc":"2.0","id":2,"method":"Meta.Shutdown","params":{}}')
+            $proc.StandardInput.Flush()
+            $proc.StandardInput.Close()
+            if (-not $proc.WaitForExit(10000)) { throw 'DLD stdio runtime did not terminate after Meta.Shutdown.' }
+            $stdout = $proc.StandardOutput.ReadToEnd()
+            $stderr = $proc.StandardError.ReadToEnd()
+            $stdout | Out-File -Encoding utf8 artifacts/provenance/runtime-stdio-responses.txt
+            $stderr | Out-File -Encoding utf8 artifacts/provenance/runtime-stderr.txt
+            if ($proc.ExitCode -ne 0) { throw "DLD stdio runtime exited with $($proc.ExitCode)." }
+            if ($stdout -notmatch '"id":1' -or $stdout -notmatch '"versionString"') { throw 'Version.Get response missing.' }
+            if ($stdout -notmatch '"id":2') { throw 'Meta.Shutdown response missing.' }
+          } finally {
+            if (-not $proc.HasExited) { $proc.Kill($true); $proc.WaitForExit() }
+            $proc.Dispose()
+          }
 
       - name: Record build identity
         shell: pwsh
@@ -155,6 +248,24 @@ jobs:
           if ($license -ne 'PASS' -or $vuln -ne 'PASS') { throw "DLD-051 exact compliance closure HOLD: license=$license vulnerability=$vuln" }
           Write-Host 'DLD-051 exact license and vulnerability gates PASS for this exact candidate.'
 
+      - name: Assert privacy and runtime-isolation evidence closure
+        shell: pwsh
+        run: |
+          $required = @(
+            'artifacts/provenance/privacy-linkability-scan.txt',
+            'artifacts/provenance/runtime-process-summary.txt',
+            'artifacts/provenance/runtime-child-processes.txt',
+            'artifacts/provenance/runtime-tcp-listeners.txt',
+            'artifacts/provenance/runtime-udp-listeners.txt',
+            'artifacts/provenance/runtime-stdio-responses.txt',
+            'artifacts/provenance/runtime-stderr.txt'
+          )
+          foreach ($path in $required) { if (-not (Test-Path -LiteralPath $path)) { throw "Missing security evidence: $path" } }
+          if ((Get-Content artifacts/provenance/runtime-child-processes.txt -Raw).Trim() -ne 'NONE') { throw 'Runtime child-process evidence is not clean.' }
+          if ((Get-Content artifacts/provenance/runtime-tcp-listeners.txt -Raw).Trim() -ne 'NONE') { throw 'Runtime TCP-listener evidence is not clean.' }
+          if ((Get-Content artifacts/provenance/runtime-udp-listeners.txt -Raw).Trim() -ne 'NONE') { throw 'Runtime UDP-listener evidence is not clean.' }
+          if ((Get-Content artifacts/provenance/privacy-linkability-scan.txt -Raw) -notmatch 'tracked_blob_linkability=PASS') { throw 'Privacy/linkability evidence did not close.' }
+          Write-Host 'Privacy/linkability and runtime-isolation evidence PASS.'
       - name: Upload unsigned runtime and compliance evidence before any signing request
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
