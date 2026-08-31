@@ -1,0 +1,33 @@
+#include "winver.h"
+#define RT_MANIFEST 24
+#define CREATEPROCESS_MANIFEST_RESOURCE_ID 1
+#define IDI_ICON_S 101
+
+1 VERSIONINFO
+FILEVERSION     15,30,0,4
+PRODUCTVERSION  15,30,0,4
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "080904E4"
+    BEGIN
+      VALUE "CompanyName", "DLM OSS Runtime Project"
+      VALUE "FileDescription", "Hardened optional provider runtime for Doujin Library Manager"
+      VALUE "FileVersion", "15.30.0.4"
+      VALUE "InternalName", "dlm-butler-runtime"
+      VALUE "LegalCopyright", "Upstream copyright itch corp.; DLD modifications by DLM project contributors"
+      VALUE "OriginalFilename", "butler.exe"
+      VALUE "ProductName", "DLM Butler Runtime"
+      VALUE "ProductVersion", "15.30.0.4"
+    END
+  END
+
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x809, 1252
+  END
+END
+
+IDI_ICON_S       ICON      "butler.ico"
+
+CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST MOVEABLE PURE "butler.manifest.xml"

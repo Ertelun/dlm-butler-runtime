@@ -1,0 +1,14 @@
+/artifacts
+/broth
+/butler
+/built
+/tmp
+*.exe
+*.pwr*
+.DS_Store
+_book
+node_modules
+*.syso
+debug.test
+.idea
+coverage.txt

@@ -1,0 +1,21 @@
+//@ts-check
+"use strict";
+
+const { $, $$ } = require("@itchio/bob");
+
+async function main() {
+  $(`go version`);
+  let gopath = $$(`go env GOPATH`).trim();
+  process.env.PATH += `:${gopath}/bin`;
+
+  $(`go get -v -x ./butlerd/generous`);
+  $(`generous godocs`);
+
+  if (process.env.GITHUB_REF_NAME) {
+    $(`gsutil -m cp -r -a public-read ./butlerd/generous/docs/* gs://docs.itch.zone/butlerd/${process.env.GITHUB_REF_NAME}/`);
+  } else {
+    console.warn("Skipping uploading generous docs, no GITHUB_REF_NAME environment variable set")
+  }
+}
+
+main();

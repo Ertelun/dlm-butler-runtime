@@ -1,0 +1,14 @@
+{
+  "name": "butler-docs",
+  "version": "1.0.0",
+  "description": "butler is the itch.io command-line tool",
+  "main": "index.js",
+  "scripts": {
+    "build": "honkit build",
+    "serve": "honkit serve"
+  },
+  "author": "",
+  "devDependencies": {
+    "honkit": "^6.1.7"
+  }
+}

@@ -1,0 +1,97 @@
+package launch
+
+import (
+	"fmt"
+	"os"
+
+	"crawshaw.io/sqlite"
+	"github.com/itchio/butler/butlerd"
+	"github.com/itchio/butler/cmd/operate"
+	"github.com/itchio/butler/database/models"
+	"github.com/itchio/butler/manager/runlock"
+	"github.com/pkg/errors"
+
+	"github.com/itchio/ox"
+
+	validation "github.com/go-ozzo/ozzo-validation"
+)
+
+type withInstallFolderLockParams struct {
+	rc        *butlerd.RequestContext
+	caveID    string
+	profileID int64
+	reason    string
+}
+
+type withInstallFolderInfo struct {
+	installFolder string
+	cave          *models.Cave
+	access        *operate.GameAccess
+	runtime       ox.Runtime
+}
+
+func resolveInstallFolderInfo(rc *butlerd.RequestContext, caveID string, profileID int64) (withInstallFolderInfo, error) {
+	cave := operate.ValidateCave(rc, caveID)
+	var installFolder string
+	rc.WithConn(func(conn *sqlite.Conn) {
+		installFolder = cave.GetInstallFolder(conn)
+	})
+
+	_, err := os.Stat(installFolder)
+	if err != nil && os.IsNotExist(err) {
+		return withInstallFolderInfo{}, &butlerd.RpcError{
+			Code:    int64(butlerd.CodeInstallFolderDisappeared),
+			Message: fmt.Sprintf("Could not find install folder (%s)", installFolder),
+		}
+	}
+
+	var access *operate.GameAccess
+	var accessErr error
+	rc.WithConn(func(conn *sqlite.Conn) {
+		if profileID != 0 {
+			access, accessErr = operate.StrictAccessForGameID(conn, cave.GameID, profileID)
+		} else {
+			access = operate.AccessForGameID(conn, cave.GameID)
+		}
+	})
+	if accessErr != nil {
+		return withInstallFolderInfo{}, accessErr
+	}
+
+	runtime := ox.CurrentRuntime()
+
+	return withInstallFolderInfo{
+		installFolder,
+		cave,
+		access,
+		runtime,
+	}, nil
+}
+
+func withInstallFolderLock(params withInstallFolderLockParams, f func(info withInstallFolderInfo) error) error {
+	err := validation.ValidateStruct(&params,
+		validation.Field(&params.rc, validation.Required),
+		validation.Field(&params.caveID, validation.Required),
+		validation.Field(&params.reason, validation.Required),
+	)
+	if err != nil {
+		return err
+	}
+
+	rc := params.rc
+	consumer := rc.Consumer
+
+	info, err := resolveInstallFolderInfo(rc, params.caveID, params.profileID)
+	if err != nil {
+		return err
+	}
+
+	rlock := runlock.New(consumer, info.installFolder)
+	err = rlock.Lock(rc.Ctx, params.reason)
+	if err != nil {
+		return errors.WithStack(err)
+	}
+	defer rlock.Unlock()
+
+	return f(info)
+}
