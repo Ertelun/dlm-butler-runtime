@@ -3,9 +3,9 @@ name: DLD Windows unsigned trusted build
 on:
   workflow_dispatch:
   push:
-    branches: [dld-051-v15.30.0]
+    branches: [main]
   pull_request:
-    branches: [dld-051-v15.30.0]
+    branches: [main]
 
 permissions:
   contents: read

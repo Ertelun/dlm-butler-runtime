@@ -3,11 +3,10 @@
 > It is not official itch.io software and does not imply itch.io endorsement. See `DLD_FORK_NOTICE.md` and `CODE_SIGNING_POLICY.md`.
 
 > [!NOTE]
-> **Planned Windows release signing.** Free code signing is provided by SignPath.io, with a certificate provided by the SignPath Foundation. This project is preparing the SignPath Foundation application; no release binary is represented as SignPath-signed until the Foundation accepts the application and the approved Trusted Build and Origin Verification process has completed.
+> **Windows release signing status.** A SignPath Foundation application was previously submitted against the legacy provenance repository and remains pending. This Ertelun repository is a separate clean-history candidate and is not yet represented as SignPath Foundation-approved or SignPath-signed. Any future signed release requires Foundation/SignPath acceptance of the Ertelun repository identity plus the approved Trusted Build and Origin Verification process.
 
 # butler
 
-[![test](https://github.com/itchio/butler/actions/workflows/test.yml/badge.svg)](https://github.com/itchio/butler/actions/workflows/test.yml)
 ![MIT licensed](https://img.shields.io/badge/license-MIT-blue.svg)
 
 butler is *the itch.io command-line tools* - all by itself.
