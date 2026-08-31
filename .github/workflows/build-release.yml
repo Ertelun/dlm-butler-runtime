@@ -140,17 +140,77 @@ jobs:
             $children = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $($proc.Id)" -ErrorAction Stop)
             $tcp = @(Get-NetTCPConnection -OwningProcess $proc.Id -State Listen -ErrorAction SilentlyContinue)
             $udp = @(Get-NetUDPEndpoint -OwningProcess $proc.Id -ErrorAction SilentlyContinue)
+
+            # A Windows command-line process can receive conhost.exe as OS console
+            # infrastructure. Permit only the exact System32 console host when its
+            # Authenticode signature is Valid and issued to Microsoft. Everything
+            # else remains fail-closed.
+            $expectedConhost = [IO.Path]::GetFullPath((Join-Path $env:SystemRoot 'System32\conhost.exe'))
+            $allowedPlatformChildren = @()
+            $unexpectedChildren = @()
+            $childEvidence = @()
+
+            foreach ($child in $children) {
+              $childPath = [string]$child.ExecutablePath
+              $signatureStatus = 'NOT_CHECKED'
+              $signerSubject = ''
+              $classification = 'UNEXPECTED'
+
+              $isExpectedPath = (
+                $child.Name -ieq 'conhost.exe' -and
+                -not [string]::IsNullOrWhiteSpace($childPath) -and
+                [IO.Path]::GetFullPath($childPath) -ieq $expectedConhost
+              )
+
+              if ($isExpectedPath) {
+                $sig = Get-AuthenticodeSignature -FilePath $childPath
+                $signatureStatus = [string]$sig.Status
+                if ($null -ne $sig.SignerCertificate) {
+                  $signerSubject = [string]$sig.SignerCertificate.Subject
+                }
+
+                if ($sig.Status -eq 'Valid' -and $signerSubject -match 'Microsoft') {
+                  $classification = 'ALLOWED_WINDOWS_CONSOLE_HOST'
+                  $allowedPlatformChildren += $child
+                } else {
+                  $unexpectedChildren += $child
+                }
+              } else {
+                $unexpectedChildren += $child
+              }
+
+              $childEvidence += [pscustomobject]@{
+                ProcessId = $child.ProcessId
+                ParentProcessId = $child.ParentProcessId
+                Name = $child.Name
+                ExecutablePath = $childPath
+                CommandLine = $child.CommandLine
+                Classification = $classification
+                AuthenticodeStatus = $signatureStatus
+                SignerSubject = $signerSubject
+              }
+            }
+
             @(
               "pid=$($proc.Id)",
               "path=$($psi.FileName)",
               "child_process_count=$($children.Count)",
+              "allowed_platform_child_count=$($allowedPlatformChildren.Count)",
+              "unexpected_child_process_count=$($unexpectedChildren.Count)",
               "tcp_listener_count=$($tcp.Count)",
               "udp_listener_count=$($udp.Count)"
             ) | Out-File -Encoding utf8 artifacts/provenance/runtime-process-summary.txt
-            if ($children.Count -eq 0) { 'NONE' | Out-File -Encoding ascii artifacts/provenance/runtime-child-processes.txt } else { $children | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine | Format-List | Out-File -Encoding utf8 artifacts/provenance/runtime-child-processes.txt }
+
+            if ($childEvidence.Count -eq 0) {
+              'NONE' | Out-File -Encoding ascii artifacts/provenance/runtime-child-processes.txt
+            } else {
+              $childEvidence | Format-List | Out-File -Encoding utf8 artifacts/provenance/runtime-child-processes.txt
+            }
+
             if ($tcp.Count -eq 0) { 'NONE' | Out-File -Encoding ascii artifacts/provenance/runtime-tcp-listeners.txt } else { $tcp | Select-Object LocalAddress,LocalPort,RemoteAddress,RemotePort,State,OwningProcess | Format-Table -AutoSize | Out-File -Encoding utf8 artifacts/provenance/runtime-tcp-listeners.txt }
             if ($udp.Count -eq 0) { 'NONE' | Out-File -Encoding ascii artifacts/provenance/runtime-udp-listeners.txt } else { $udp | Select-Object LocalAddress,LocalPort,OwningProcess | Format-Table -AutoSize | Out-File -Encoding utf8 artifacts/provenance/runtime-udp-listeners.txt }
-            if ($children.Count -ne 0) { throw 'Unexpected child process(es) spawned by stdio runtime.' }
+
+            if ($unexpectedChildren.Count -ne 0) { throw 'Unexpected non-platform child process(es) spawned by stdio runtime.' }
             if ($tcp.Count -ne 0) { throw 'Unexpected TCP listener(s) owned by stdio runtime.' }
             if ($udp.Count -ne 0) { throw 'Unexpected UDP listener(s) owned by stdio runtime.' }
             $proc.StandardInput.WriteLine('{"jsonrpc":"2.0","id":1,"method":"Version.Get","params":{}}')
@@ -261,7 +321,8 @@ jobs:
             'artifacts/provenance/runtime-stderr.txt'
           )
           foreach ($path in $required) { if (-not (Test-Path -LiteralPath $path)) { throw "Missing security evidence: $path" } }
-          if ((Get-Content artifacts/provenance/runtime-child-processes.txt -Raw).Trim() -ne 'NONE') { throw 'Runtime child-process evidence is not clean.' }
+          $runtimeSummary = Get-Content artifacts/provenance/runtime-process-summary.txt -Raw
+          if ($runtimeSummary -notmatch '(?m)^unexpected_child_process_count=0\s*$') { throw 'Runtime child-process evidence contains an unexpected child.' }
           if ((Get-Content artifacts/provenance/runtime-tcp-listeners.txt -Raw).Trim() -ne 'NONE') { throw 'Runtime TCP-listener evidence is not clean.' }
           if ((Get-Content artifacts/provenance/runtime-udp-listeners.txt -Raw).Trim() -ne 'NONE') { throw 'Runtime UDP-listener evidence is not clean.' }
           if ((Get-Content artifacts/provenance/privacy-linkability-scan.txt -Raw) -notmatch 'tracked_blob_linkability=PASS') { throw 'Privacy/linkability evidence did not close.' }
