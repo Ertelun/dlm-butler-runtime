@@ -28,9 +28,11 @@ jobs:
         run: |
           $ErrorActionPreference='Stop'
           New-Item -ItemType Directory -Force artifacts\runtime,artifacts\provenance,artifacts\smoke | Out-Null
-          $z='security-build-inputs\DLD-054-C0R2-CANDIDATE-SOURCE-r1.zip'
+          $encoded='security-build-inputs\DLD-054-C0R2-CANDIDATE-SOURCE-r1.zip.b64'
+          $z=Join-Path $env:RUNNER_TEMP 'DLD-054-C0R2-CANDIDATE-SOURCE-r1.zip'
+          [IO.File]::WriteAllBytes($z,[Convert]::FromBase64String((Get-Content -LiteralPath $encoded -Raw)))
           $zh=(Get-FileHash $z -Algorithm SHA256).Hash.ToLowerInvariant()
-          if($zh -cne $env:SOURCE_SHA){throw 'source hash mismatch'}
+          if($zh -cne $env:SOURCE_SHA){throw "decoded exact source hash mismatch: $zh"}
           Copy-Item $z artifacts\provenance\DLD-054-C0R2-OWNEDKEYS-DIAGNOSTIC-RUNTIME-SOURCE-CANDIDATE-r1.zip
           Expand-Archive $z source
           $src=(Resolve-Path 'source\c0r2runtime').Path
