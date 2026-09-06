@@ -67,7 +67,7 @@ jobs:
           try{
             $started=$p.Start();if(-not $started){throw 'start failed'};Start-Sleep -Milliseconds 300;if($p.HasExited){throw 'early exit'}
             $tcp=@(Get-NetTCPConnection -ErrorAction Stop|? OwningProcess -eq $p.Id);$udp=@(Get-NetUDPEndpoint -ErrorAction Stop|? OwningProcess -eq $p.Id);if($tcp.Count -or $udp.Count){throw 'unexpected network endpoint'}
-            $p.StandardInput.WriteLine('{"jsonrpc":"2.0","id":1,"method":"Version.Get","params":{}}');$p.StandardInput.WriteLine('{"jsonrpc":"2.0","id":2,"method":"Meta.Shutdown","params":{}}');$p.StandardInput.Close();if(-not $p.WaitForExit(10000)){throw 'shutdown timeout'}
+            $p.StandardInput.WriteLine('{"jsonrpc":"2.0","id":1,"method":"Version.Get","params":{}}'.Replace('\"','"'));$p.StandardInput.WriteLine('{"jsonrpc":"2.0","id":2,"method":"Meta.Shutdown","params":{}}'.Replace('\"','"'));$p.StandardInput.Close();if(-not $p.WaitForExit(10000)){throw 'shutdown timeout'}
             $out=$p.StandardOutput.ReadToEnd();$err=$p.StandardError.ReadToEnd();$out|Out-File -Encoding utf8 artifacts\smoke\stdio.txt;$err|Out-File -Encoding utf8 artifacts\smoke\stderr.txt;if($p.ExitCode){throw "exit $($p.ExitCode)"}
             $lines=@($out -split "`r?`n"|?{-not [string]::IsNullOrWhiteSpace($_)});if($lines.Count -ne 2){throw "response count $($lines.Count)"}
             $responses=@($lines|%{$_|ConvertFrom-Json});$vr=@($responses|?{[string]$_.id -eq '1'});$sr=@($responses|?{[string]$_.id -eq '2'});if($vr.Count -ne 1 -or $sr.Count -ne 1){throw 'expected response ids missing'};$v=$vr[0];$s=$sr[0]
