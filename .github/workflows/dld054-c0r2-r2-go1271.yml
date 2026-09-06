@@ -28,9 +28,11 @@ jobs:
         run: |
           $ErrorActionPreference='Stop'
           New-Item -ItemType Directory -Force artifacts\runtime,artifacts\provenance,artifacts\smoke | Out-Null
-          $encoded='security-build-inputs\DLD-054-C0R2-CANDIDATE-SOURCE-r1.zip.b64'
+          $parts=@(Get-ChildItem -LiteralPath 'security-build-inputs\source-b64-parts' -Filter '*.part' | Sort-Object Name)
+          if($parts.Count -ne 5){throw "expected 5 source chunks, got $($parts.Count)"}
+          $encoded=($parts | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw }) -join ''
           $z=Join-Path $env:RUNNER_TEMP 'DLD-054-C0R2-CANDIDATE-SOURCE-r1.zip'
-          [IO.File]::WriteAllBytes($z,[Convert]::FromBase64String((Get-Content -LiteralPath $encoded -Raw)))
+          [IO.File]::WriteAllBytes($z,[Convert]::FromBase64String($encoded))
           $zh=(Get-FileHash $z -Algorithm SHA256).Hash.ToLowerInvariant()
           if($zh -cne $env:SOURCE_SHA){throw "decoded exact source hash mismatch: $zh"}
           Copy-Item $z artifacts\provenance\DLD-054-C0R2-OWNEDKEYS-DIAGNOSTIC-RUNTIME-SOURCE-CANDIDATE-r1.zip
